@@ -1,0 +1,198 @@
+#!/usr/bin/env ruby
+
+require 'json'
+require 'open-uri'
+
+RELEASE_URL = "https://api.github.com/repos/CleverRaven/Cataclysm-DDA/releases"
+CATACLYST_HOME = File.expand_path('~/.cataclyst')
+RELEASES_DIR = File.expand_path('~/.cataclyst/releases')
+CONFIG_DIR = File.expand_path('~/.cataclyst/settings')
+CONFIG = File.expand_path('~/Library/Application Support/Cataclysm/config/options.json')
+
+
+`mkdir -p #{CONFIG_DIR}`
+`mkdir -p #{CONFIG_DIR}/config`
+
+def releases
+  @releases ||= JSON.parse(open(RELEASE_URL).read).select { |r| release_compatible?(r) }
+end
+
+def help
+  <<-HEREDOC.strip
+cataclyst
+
+  commands:
+    check
+    install (<hash>|latest)
+    play [<hash>]
+    list
+  HEREDOC
+end
+
+def download_to_file(url, path)
+  File.open(path, "wb") do |f|
+    open(url, "rb") do |response|
+      f.write(response.read)
+    end
+  end
+end
+
+def pluralise(s, n)
+  return s if n <= 1
+  s + "s"
+end
+
+def time_ago(n)
+  minutes = (n / 60).floor
+  hours = (minutes / 60).floor
+  days = (hours / 24).floor
+
+  if (minutes < 60)
+    "#{minutes} #{pluralise("minute", minutes)} ago"
+  elsif hours < 24
+    "#{hours} #{pluralise("hour", hours)} ago"
+  else
+    "#{days} #{pluralise("day", days)} ago"
+  end
+end
+
+def release_installed?(release)
+  install_path = File.expand_path("~/.cataclyst/releases/#{release["tag_name"]}")
+
+  File.exists?("#{install_path}/.installed")
+end
+
+def install_macos(release)
+  install_path = File.expand_path("~/.cataclyst/releases/#{release["tag_name"]}")
+
+  if release_installed?(release)
+    puts "Release #{release["tag_name"]} already installed."
+
+    return
+  end
+
+  asset = release["assets"].find { |a| a["label"] == "OSX Tiles" }
+
+  puts "Installing #{release["tag_name"]}"
+
+  download_to_file(asset["browser_download_url"], '/tmp/catdda.dmg')
+
+  begin
+    output = `hdiutil attach /tmp/catdda.dmg`
+    disk = output.match(/\/dev\/\w+/)
+    path = output.match(/\/Volumes\/(.*)$/)
+
+    puts "Extracting"
+
+    `mkdir -p #{install_path}`
+    `cp -R "#{path}/Cataclysm.app" #{install_path}`
+    `chmod -R 777 #{install_path}`
+
+    `touch #{install_path}/.installed`
+  ensure
+    `hdiutil detach #{disk}`
+  end
+end
+
+def release_compatible?(release)
+  release["assets"].map { |a| a["label"] }.include?("OSX Tiles")
+end
+
+def find_latest_compatible_build
+  releases.find { |r| release_compatible?(r) }
+end
+
+def play(version)
+  versions = Dir.entries(RELEASES_DIR).reject { |v| v.start_with?(".") }
+
+  if version == ""
+    v = versions.sort.last.to_s
+  else
+    v = versions.find { |vv| vv.match(version) }
+  end
+
+  if (v.to_s.strip == "")
+    puts "No matching versions installed."
+    puts
+    puts "Installed versions:"
+    puts versions
+    return
+  end
+  puts "Starting #{v}"
+  puts `#{RELEASES_DIR}/#{v}/Cataclysm.app/Contents/MacOS/Cataclysm.sh --userdir #{CONFIG_DIR}/`
+end
+
+def open(version)
+  versions = Dir.entries(RELEASES_DIR).reject { |v| v.start_with?(".") }
+
+  if version == ""
+    v = versions.sort.last.to_s
+  else
+    v = versions.find { |vv| vv.match(version) }
+  end
+
+  if (v.to_s.strip == "")
+    puts "No matching versions installed."
+    puts
+    puts "Installed versions:"
+    puts versions
+    return
+  end
+  puts "Starting #{v}"
+  puts `open #{RELEASES_DIR}/#{v}/Cataclysm.app/Contents/`
+end
+
+def install(version)
+  version = "latest" if version == ""
+
+  if version == "latest"
+    release = find_latest_compatible_build
+  else
+    release = releases.find { |r| r["tag_name"].match(version) }
+  end
+
+  return puts "No suitable release found!" unless release
+
+  install_macos(release)
+end
+
+def check
+  release = find_latest_compatible_build
+  if release_installed?(release)
+    puts "Up to date."
+  else
+    puts "There is a new release available!"
+
+    puts "#{release["tag_name"]} - #{time_ago(Time.now - Time.parse(release["published_at"]))}"
+  end
+end
+
+def print_releases
+  releases.each do |release|
+    output = "#{release["tag_name"]} - #{time_ago(Time.now - Time.parse(release["published_at"]))}"
+    output += " - installed" if release_installed?(release)
+    puts output
+  end
+end
+
+def main
+  `mkdir -p #{RELEASES_DIR}`
+  command, *rest = ARGV
+
+  case command
+  when "play"
+    play(rest.first.to_s.strip)
+  when "install"
+    install(rest.first.to_s.strip)
+  when "check"
+    check
+  when "list"
+    print_releases
+  when "open"
+    open(rest.first.to_s.strip)
+  else
+    puts help
+  end
+end
+
+main
